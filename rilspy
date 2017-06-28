@@ -1,0 +1,142 @@
+# rilspy_onsms
+#include <android/log.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <unistd.h>
+#include <binder/IPCThreadState.h>
+#include "base.h" // adbi base
+#include "hook.h"
+#define ALOGD(...) __android_log_print(ANDROID_LOG_DEBUG, "librilspy", __VA_ARGS__)
+#define LOGI(...) ((void)__android_log_print(ANDROID_LOG_INFO, "hook-onRequest", __VA_ARGS__))
+#define LOGE(...) ((void)__android_log_print(ANDROID_LOG_ERROR, "hook-onRequest", __VA_ARGS__))
+
+
+typedef void * RIL_Token;
+
+//typedef unsigned int size_t;
+
+typedef enum {
+    RIL_E_SUCCESS = 0,
+    RIL_E_RADIO_NOT_AVAILABLE = 1,     /* If radio did not start or is resetting */
+    RIL_E_GENERIC_FAILURE = 2,
+    RIL_E_PASSWORD_INCORRECT = 3,      /* for PIN/PIN2 methods only! */
+    RIL_E_SIM_PIN2 = 4,                /* Operation requires SIM PIN2 to be entered */
+    RIL_E_SIM_PUK2 = 5,                /* Operation requires SIM PIN2 to be entered */
+    RIL_E_REQUEST_NOT_SUPPORTED = 6,
+    RIL_E_CANCELLED = 7,
+    RIL_E_OP_NOT_ALLOWED_DURING_VOICE_CALL = 8, /* data ops are not allowed during voice
+                                                   call on a Class C GPRS device */
+    RIL_E_OP_NOT_ALLOWED_BEFORE_REG_TO_NW = 9,  /* data ops are not allowed before device
+                                                   registers in network */
+    RIL_E_SMS_SEND_FAIL_RETRY = 10,             /* fail to send sms and need retry */
+    RIL_E_SIM_ABSENT = 11,                      /* fail to set the location where CDMA subscription
+                                                   shall be retrieved because of SIM or RUIM
+                                                   card absent */
+    RIL_E_SUBSCRIPTION_NOT_AVAILABLE = 12,      /* fail to find CDMA subscription from specified
+                                                   location */
+    RIL_E_MODE_NOT_SUPPORTED = 13,              /* HW does not support preferred network type */
+    RIL_E_FDN_CHECK_FAILURE = 14,               /* command failed because recipient is not on FDN list */
+    RIL_E_ILLEGAL_SIM_OR_ME = 15                /* network selection failed due to
+                                                   illegal SIM or ME */
+} RIL_Errno;
+
+typedef struct {
+    int requestNumber;
+    void *dispatchFunction;
+    int responseFunction;
+} CommandInfo;
+
+typedef struct RequestInfo {
+    int32_t token;      //this is not RIL_Token
+    CommandInfo *pCI;
+    struct RequestInfo *p_next;
+    char cancelled;
+    char local;         // responses to local commands do not go back to command process
+} RequestInfo;
+
+typedef struct {
+    int messageRef;   /* TP-Message-Reference for GSM,
+                         and BearerData MessageId for CDMA
+                         (See 3GPP2 C.S0015-B, v2.0, table 4.5-1). */
+    char *ackPDU;     /* or NULL if n/a */
+    int errorCode;    /* See 3GPP 27.005, 3.2.5 for GSM/UMTS,
+                         3GPP2 N.S0005 (IS-41C) Table 171 for CDMA,
+                         -1 if unknown or not applicable*/
+} RIL_SMS_Response;
+
+static int getCallingPid() {
+  return IPCThreadState::self()->getCallingPid();
+}
+static int getCallingUid() {
+   return IPCThreadState::self()->getCallingUid();
+}
+
+void _init(char *args)
+{
+    LOGI("[+] lib loaded ...");
+}
+
+//int (*orig_at_send_command)( char *command,char *pdu,char *responsePrefix,ATResponse **pp_outResponse);
+
+static char* get_time(void)
+{
+
+    struct timeval tv;
+	time_t nowtime;
+	struct tm *nowtm;
+	char tmbuf[64], buftest[64];
+
+
+    gettimeofday(&tv, NULL);
+	nowtime = tv.tv_sec;
+	nowtm = localtime(&nowtime);
+	strftime(tmbuf, sizeof tmbuf, "%Y-%m-%d %H:%M:%S", nowtm);
+	snprintf(buftest, sizeof buftest, "%s.%06ld", tmbuf, tv.tv_usec);
+        return buftest;
+}
+
+
+static struct hook_t hook_reqst;
+
+
+//static int  hooked_onRequest(RIL_Token t, RIL_Errno e, void *response, size_t responselen){
+static int hooked_onRequest(void *data, size_t datalen, RIL_Token t){
+	int (*orig_RIL_onRequestComplete)(void *data, size_t datalen, RIL_Token t)=(void*)hook_reqst.orig;
+	char* time;
+	time = get_time();
+	int callingPid = getCallingPid();
+	int callingUid = getCallingUid();
+	hook_precall(&hook_reqst);
+	int  res = (*orig_RIL_onRequestComplete)(data,datalen,t);
+	hook_postcall(&hook_reqst);
+    char *sss;
+	int a = 2*sizeof(int)+sizeof(sss);
+	//if(responselen==a)
+	LOGI("hooked_onRequest ");
+	LOGI("%s libreference-ril::RIL_onRequestComplete   PID:%d UID:%d",time,callingPid,callingUid);
+	//LOGI("%x",*orig_RIL_onRequestComplete);
+	
+	return res;
+	
+	//return  (*orig_RIL_onRequestComplete)(t,e,response,responselen);
+
+}
+
+static void my_log(char *msg) { ALOGD("%s", msg); }
+
+// set my_init as the entry point
+void __attribute__ ((constructor)) static my_init(void);
+
+
+static void my_init(void) {
+	ALOGD("initializing");
+
+	// set log function for  libbase (very important!)
+	set_logfunction(my_log);
+
+	hook(&hook_reqst, getpid(), "libril-qc-qmi-1.", "qcril_sms_request_send_sms", 0, hooked_onRequest);
+	//hook(&hook_read, getpid(), "libc.", "read", my_read, 0);
+}
